@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<title>Koordinat → Ova Kontrol (KMZ)</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+
+<!-- JSZip ve toGeoJSON -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.7.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5/dist/togeojson.umd.js"></script>
+
+<!-- Turf -->
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+<style>
+  body { font-family: Arial; margin:0; padding:12px; background:#f4f6f8; }
+  .card { background:white; padding:12px; margin-bottom:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,0.08); }
+  input { padding:8px; width:200px; margin-right:10px; border-radius:6px; border:1px solid #ccc; }
+  button { padding:9px 14px; border-radius:8px; border:0; background:#1976d2; color:white; cursor:pointer; }
+  #map { height:60vh; margin-top:12px; border-radius:10px; }
+</style>
+</head>
+<body>
+
+<h2>Koordinat → Ova Kontrol Sistemi (KMZ)</h2>
+
+<div class="card">
+  <b>1) KMZ yükle</b>  
+  <div>Ova sınırlarını içeren .kmz / .kml dosyasını seç:</div>
+  <input id="file" type="file" accept=".kmz,.kml">
+  <div id="kmzName" style="margin-top:6px; color:#444;"></div>
+</div>
+
+<div class="card">
+  <b>2) Koordinat gir (Lat–Lon)</b><br><br>
+  <input id="lat" placeholder="Lat (Y)">
+  <input id="lon" placeholder="Lon (X)">
+  <button id="kontrolBtn">Kontrol Et</button>
+  <div id="result" style="margin-top:10px; font-weight:700;"></div>
+  <div id="ovaList" style="margin-top:5px;"></div>
+</div>
+
+<div id="map" class="card"></div>
+
+<script>
+// HARİTA
+var map = L.map('map').setView([39, 35], 6);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+// DEĞİŞKENLER
+var ovaGeo = null;
+var ovaFeatures = [];
+var coordMarker = null;
+
+// KMZ/KML YÜKLEME
+document.getElementById('file').addEventListener('change', async function(e){
+  const f = e.target.files[0];
+  if(!f) return;
+
+  document.getElementById('kmzName').textContent = "Yükleniyor: " + f.name;
+
+  try {
+    const ext = f.name.split('.').pop().toLowerCase();
+    let geojson = null;
+
+    if(ext === 'kml') {
+      const text = await f.text();
+      const dom = new DOMParser().parseFromString(text, 'text/xml');
+      geojson = toGeoJSON.kml(dom);
+    } else if(ext === 'kmz') {
+      const buf = await f.arrayBuffer();
+      const zip = await JSZip.loadAsync(buf);
+      const kmlName = Object.keys(zip.files).find(n => n.toLowerCase().endsWith('.kml'));
+      const kmlText = await zip.files[kmlName].async('string');
+      const dom = new DOMParser().parseFromString(kmlText, 'text/xml');
+      geojson = toGeoJSON.kml(dom);
+    }
+
+    loadGeoJSON(geojson);
+    document.getElementById('kmzName').textContent = "Yüklendi: " + f.name;
+
+  } catch(err){
+    alert("Hata: " + err.message);
+  }
+});
+
+// GEOJSON İŞLEME
+function loadGeoJSON(gj){
+  if(ovaGeo) map.removeLayer(ovaGeo);
+
+  gj.features.forEach((f,i)=>{
+    if(!f.properties) f.properties = {};
+    if(!f.properties.name) f.properties.name = f.properties.Name || "Ova " + (i+1);
+  });
+
+  ovaFeatures = gj.features.filter(f=> 
+    f.geometry && (f.geometry.type==="Polygon" || f.geometry.type==="MultiPolygon")
+  );
+
+  ovaGeo = L.geoJSON({type:"FeatureCollection",features:ovaFeatures},{
+    style:{color:"#d9534f", weight:2, fillOpacity:0.15},
+    onEachFeature:(f,l)=>l.bindPopup("<b>Ova:</b> " + f.properties.name)
+  }).addTo(map);
+
+  map.fitBounds(ovaGeo.getBounds());
+}
+
+// KOORDİNAT KONTROL
+document.getElementById('kontrolBtn').addEventListener('click', function(){
+
+  if(!ovaGeo){ alert("Önce KMZ dosyası yükleyin."); return; }
+
+  const lat = Number(document.getElementById('lat').value);
+  const lon = Number(document.getElementById('lon').value);
+
+  if(isNaN(lat) || isNaN(lon)){
+    alert("Geçerli koordinat girin.");
+    return;
+  }
+
+  // NOKTAYI HARİTAYA KOY
+  if(coordMarker) map.removeLayer(coordMarker);
+  coordMarker = L.marker([lat, lon]).addTo(map);
+  map.setView([lat, lon], 16);
+
+  // POLİGON KONTROLÜ
+  const pt = turf.point([lon, lat]);
+  const inside = [];
+
+  ovaFeatures.forEach(f=>{
+    if(turf.booleanPointInPolygon(pt, f)){
+      inside.push(f.properties.name);
+    }
+  });
+
+
+  // SONUÇ
+  const r = document.getElementById('result');
+  const l = document.getElementById('ovaList');
+
+  if(inside.length > 0){
+    r.textContent = "📌 Nokta OVA ALANI İÇİNDE";
+    l.innerHTML = "Ova(lar): <b>" + inside.join("</b>, <b>") + "</b>";
+  } else {
+    r.textContent = "📌 Nokta OVA DIŞINDA";
+    l.textContent = "";
+  }
+
+});
+</script>
+
+</body>
+</html>
