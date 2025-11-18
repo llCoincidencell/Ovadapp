@@ -1,142 +1,66 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html>
 <head>
-<meta charset="utf-8" />
-<title>Parsel → Ova Kontrol (BOKA KMZ Sabit)</title>
+<meta charset="utf-8">
+<title>Ova Sorgu Haritası</title>
 
-<!-- Leaflet -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<!-- JSZip + toGeoJSON -->
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.7.1/dist/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5/dist/togeojson.umd.js"></script>
 
-<!-- Turf.js -->
-<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-
 <style>
-  body { font-family: Arial; margin:0; padding:12px; background:#f1f5f9; }
-  #map { height: 68vh; border-radius:10px; margin-top:10px; }
-  .box { background:white; padding:12px; border-radius:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1); margin-bottom:10px; }
-  input { width:150px; padding:7px; border-radius:6px; border:1px solid #ccc; }
-  button { padding:7px 14px; border-radius:8px; border:0; background:#1976d2; color:white; cursor:pointer; }
+  body { margin:0; }
+  #map { height:100vh; width:100vw; }
 </style>
 </head>
-
 <body>
-
-<h2>BOKA – Ova İçinde mi? (KMZ Otomatik Yüklü)</h2>
-
-<div class="box">
-  <b>Koordinat Gir</b> (Haritaya tıklayınca otomatik dolar)
-  <br><br>
-  Enlem (Lat): <input id="lat" placeholder="36.85">
-  Boylam (Lon): <input id="lon" placeholder="28.27">
-  <button onclick="kontrolEt()">Kontrol Et</button>
-</div>
-
-<div class="box" id="sonuc">Sonuç bekleniyor...</div>
 
 <div id="map"></div>
 
 <script>
-/* -------------------------------------
-   HARİTA
--------------------------------------- */
-var map = L.map("map").setView([39,35], 6);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:19 }).addTo(map);
+const map = L.map("map").setView([39, 35], 6);
 
-var ovaLayers = null;
-var ovaFeatures = [];
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+}).addTo(map);
 
-/* -------------------------------------
-   KMZ’yi otomatik yükle
-   (aynı klasörde olduğu için direkt okunur)
--------------------------------------- */
-async function loadKMZ(){
-    try {
-        const res = await fetch("boka.kmz");
-        const buf = await res.arrayBuffer();
-        const zip = await JSZip.loadAsync(buf);
+let ovaLayers = []; // tüm ova poligonlarını burada tutacağız
 
-        const kmlName = Object.keys(zip.files).find(f => f.endsWith(".kml"));
-        if (!kmlName) { alert("KMZ içinde KML bulunamadı!"); return; }
+// -------------------------------
+// ZIP → KMZ → KML → GeoJSON YÜKLE
+// -------------------------------
+fetch("BOKA.zip")
+  .then(r => r.arrayBuffer())
+  .then(zipData => JSZip.loadAsync(zipData))
+  .then(zip => zip.file("BOKA.kmz").async("arraybuffer"))
+  .then(kmzData => JSZip.loadAsync(kmzData))
+  .then(kmzZip => {
+      const kmlFile = Object.keys(kmzZip.files).find(f => f.endsWith(".kml"));
+      return kmzZip.file(kmlFile).async("string");
+  })
+  .then(kmlText => {
+      const xml = new DOMParser().parseFromString(kmlText, "text/xml");
+      const geojson = toGeoJSON.kml(xml);
 
-        const kmlText = await zip.files[kmlName].async("string");
+      const layer = L.geoJSON(geojson, {
+          style: {
+              color: "red",
+              weight: 2,
+              fillOpacity: 0.15
+          }
+      }).addTo(map);
 
-        const dom = new DOMParser().parseFromString(kmlText,"text/xml");
-        const gj = toGeoJSON.kml(dom);
+      ovaLayers.push(layer);
 
-        drawOvas(gj);
+      console.log("Ova poligonları başarıyla yüklendi!");
+  })
+  .catch(err => {
+      console.error("KMZ Okuma Hatası:", err);
+      alert("KMZ yüklenemedi. ZIP içindeki dosya adının 'BOKA.kmz' olduğundan emin olun.");
+  });
 
-    } catch(e){
-        console.error(e);
-        alert("KMZ okuma hatası: " + e.message);
-    }
-}
-
-function drawOvas(geojson){
-    if (ovaLayers) map.removeLayer(ovaLayers);
-
-    ovaFeatures = geojson.features.filter(
-        f => f.geometry && (f.geometry.type === "Polygon" || f.geometry.type === "MultiPolygon")
-    );
-
-    ovaLayers = L.geoJSON(ovaFeatures, {
-        style: { color:"#d9534f", weight:2, fillOpacity:0.15 },
-        onEachFeature: (f, layer) => {
-            const ad = f.properties.name || f.properties.Name || "Ova";
-            layer.bindPopup("Ova: <b>"+ad+"</b>");
-        }
-    }).addTo(map);
-
-    map.fitBounds(ovaLayers.getBounds());
-}
-
-/* -------------------------------------
-   Haritaya tıklayınca koordinat doldur
--------------------------------------- */
-map.on("click", function(e){
-    document.getElementById("lat").value = e.latlng.lat.toFixed(6);
-    document.getElementById("lon").value = e.latlng.lng.toFixed(6);
-});
-
-/* -------------------------------------
-   Kontrol et (turf.js point in polygon)
--------------------------------------- */
-function kontrolEt(){
-    const lat = Number(latInput.value);
-    const lon = Number(lonInput.value);
-    const sonucEl = document.getElementById("sonuc");
-
-    if (isNaN(lat) || isNaN(lon)){
-        alert("Lütfen geçerli koordinat girin");
-        return;
-    }
-
-    const p = turf.point([lon, lat]);
-    let icindekiler = [];
-
-    ovaFeatures.forEach(f=>{
-        if (turf.booleanPointInPolygon(p,f)){
-            const ad = f.properties.name || f.properties.Name || "Ova";
-            icindekiler.push(ad);
-        }
-    });
-
-    if (icindekiler.length > 0){
-        sonucEl.innerHTML = 
-           `📌 <b>OVA İÇİNDE</b><br>→ ${icindekiler.join(", ")}`;
-    } else {
-        sonucEl.innerHTML = "📌 Ova dışında";
-    }
-}
-
-/* -------------------------------------
-   Başlangıçta KMZ’yi yükle
--------------------------------------- */
-loadKMZ();
 </script>
 
 </body>
