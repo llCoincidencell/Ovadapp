@@ -2,160 +2,199 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<title>Ova Kontrol Uygulaması</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ova Kontrol Sistemi (KMZ)</title>
 
 <!-- Leaflet -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
 
-<!-- JSZip (KMZ = ZIP okuyabilmek için) -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- JSZip ve toGeoJSON -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.7.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5/dist/togeojson.umd.js"></script>
 
-<!-- toGeoJSON (KML → GeoJSON dönüşümü) -->
-<script src="https://unpkg.com/togeojson"></script>
+<!-- Turf -->
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
 
 <style>
-body { margin:0; font-family: Arial; }
-#map { height: 80vh; width: 100%; }
-#panel {
-    padding: 10px;
-    background: #f5f5f5;
-    border-top: 2px solid #ccc;
-}
-#result {
-    padding: 10px;
-    font-weight: bold;
-    font-size: 18px;
-}
+  body { font-family: Arial; margin:0; padding:12px; background:#eef2f3; }
+  .card { background:#fff; padding:12px; margin-bottom:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
+  input { padding:8px; width:200px; margin-right:10px; border-radius:6px; border:1px solid #ccc; }
+  button { padding:9px 14px; border-radius:8px; border:0; background:#1976d2; color:white; cursor:pointer; }
+  #map { height:62vh; margin-top:10px; border-radius:10px; }
 </style>
 </head>
-
 <body>
 
-<div id="map"></div>
+<h2><b>Ova Kontrol Sistemi (KMZ Tabanlı)</b></h2>
 
-<div id="panel">
-    <label>Enlem (Lat):</label>
-    <input id="lat" type="text" style="width:120px;">
-    <label>Boylam (Lon):</label>
-    <input id="lon" type="text" style="width:120px;">
-    <button onclick="checkPoint()">Kontrol Et</button>
-
-    <div id="result"></div>
+<!-- KMZ YÜKLEME -->
+<div class="card">
+  <b>1) Ova KMZ dosyasını yükle</b><br><br>
+  <input id="file" type="file" accept=".kmz,.kml">
+  <div id="kmzName" style="margin-top:6px; font-weight:bold;"></div>
 </div>
 
-<script>
-// GLOBAL Değişkenler
-let map = L.map('map').setView([38.5, 35], 6); // Türkiye merkez
-let ovaPolygons = []; // BOKA polygonları burada tutulacak
+<!-- KOORDİNAT GİRİŞİ -->
+<div class="card">
+  <b>2) Koordinat ile Ova Sorgula</b><br><br>
+  <input id="lat" placeholder="Lat (Y)">
+  <input id="lon" placeholder="Lon (X)">
+  <button id="kontrolBtn">Kontrol Et</button>
 
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19
+  <div id="result" style="margin-top:12px; font-size:18px; font-weight:bold;"></div>
+  <div id="ovaList" style="margin-top:4px;"></div>
+</div>
+
+<div id="map" class="card"></div>
+
+<script>
+
+// Harita oluştur
+const map = L.map("map").setView([39, 35], 6);
+
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19
 }).addTo(map);
 
-// Haritaya tıklayınca Lat/Lon otomatik doldurulsun
-map.on("click", function(e) {
-    document.getElementById("lat").value = e.latlng.lat.toFixed(6);
-    document.getElementById("lon").value = e.latlng.lng.toFixed(6);
+let ovaFeatures = [];
+let ovaLayer = null;
+let clickMarker = null;
+
+// -----------------------------
+// KMZ / KML DOSYASI YÜKLEME
+// -----------------------------
+document.getElementById("file").addEventListener("change", async function(e){
+  const f = e.target.files[0];
+  if(!f) return;
+
+  document.getElementById("kmzName").textContent = "Yükleniyor: " + f.name;
+
+  try {
+    const ext = f.name.split(".").pop().toLowerCase();
+    let geojson;
+
+    // KML ise
+    if(ext === "kml"){
+      const text = await f.text();
+      const dom = new DOMParser().parseFromString(text,"text/xml");
+      geojson = toGeoJSON.kml(dom);
+    }
+
+    // KMZ ise
+    if(ext === "kmz"){
+      const buf = await f.arrayBuffer();
+      const zip = await JSZip.loadAsync(buf);
+
+      // içindeki KML'yi bul
+      const kmlName = Object.keys(zip.files).find(x => x.toLowerCase().endsWith(".kml"));
+      const kmlText = await zip.files[kmlName].async("string");
+
+      const dom = new DOMParser().parseFromString(kmlText,"text/xml");
+      geojson = toGeoJSON.kml(dom);
+    }
+
+    loadOvaPolygons(geojson);
+    document.getElementById("kmzName").textContent = "Yüklendi: " + f.name;
+
+  } catch(err){
+    alert("KMZ yüklenemedi: " + err);
+  }
 });
 
-// Nokta poligon içinde mi kontrol fonksiyonu
-function pointInPolygon(point, polygon) {
-    let x = point[1], y = point[0];
-    let inside = false;
+// -----------------------------------
+// OVA POLİGONLARINI HARİTAYA YÜKLEME
+// -----------------------------------
+function loadOvaPolygons(geojson){
 
-    for (let ring of polygon) {
-        for (let i=0, j=ring.length - 1; i < ring.length; j=i++) {
-            let xi = ring[i][1], yi = ring[i][0];
-            let xj = ring[j][1], yj = ring[j][0];
+  if(ovaLayer) map.removeLayer(ovaLayer);
 
-            let intersect = ((yi > y) !== (yj > y)) &&
-                (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi);
-            if (intersect) inside = !inside;
-        }
+  ovaFeatures = geojson.features.filter(f =>
+    f.geometry && (f.geometry.type === "Polygon" || f.geometry.type === "MultiPolygon")
+  );
+
+  ovaLayer = L.geoJSON(ovaFeatures,{
+    style:{ color:"red", weight:2, fillOpacity:0.15 },
+    onEachFeature:(feature,layer)=>{
+      const name = feature.properties.name || "Ova Alanı";
+      layer.bindPopup("<b>Ova:</b> " + name);
     }
-    return inside;
+  }).addTo(map);
+
+  map.fitBounds(ovaLayer.getBounds());
 }
 
-async function loadKMZ() {
-    try {
-        const response = await fetch("boka.kmz");
-        const data = await response.arrayBuffer();
+// -----------------------------------
+// KOORDİNAT İLE SORGULAMA
+// -----------------------------------
+document.getElementById("kontrolBtn").addEventListener("click", function(){
 
-        const zip = await JSZip.loadAsync(data);
-        const kmlFile = Object.keys(zip.files).find(f => f.endsWith(".kml"));
+  if(ovaFeatures.length === 0){
+    alert("Önce KMZ dosyasını yükleyin.");
+    return;
+  }
 
-        if (!kmlFile) {
-            alert("KMZ içinde KML bulunamadı!");
-            return;
-        }
+  const lat = parseFloat(document.getElementById("lat").value);
+  const lon = parseFloat(document.getElementById("lon").value);
 
-        const kmlText = await zip.files[kmlFile].async("text");
+  if(isNaN(lat) || isNaN(lon)){
+    alert("Geçerli koordinat girin.");
+    return;
+  }
 
-        // String → XML
-        const parser = new DOMParser();
-        const kmlXML = parser.parseFromString(kmlText, "text/xml");
+  // Haritaya marker koy
+  if(clickMarker) map.removeLayer(clickMarker);
+  clickMarker = L.marker([lat,lon]).addTo(map);
+  map.setView([lat,lon],16);
 
-        // XML → GeoJSON
-        const geojson = toGeoJSON.kml(kmlXML);
+  checkPointInside(lat,lon);
+});
 
-        // Haritaya çiz
-        L.geoJSON(geojson, {
-            style: { color: "red", weight: 2 }
-        }).addTo(map);
+// -----------------------------------
+// HARİTAYA TIKLAYINCA OTOMATİK KOORDİNAT AL
+// -----------------------------------
+map.on("click", function(e){
+  const lat = e.latlng.lat.toFixed(7);
+  const lon = e.latlng.lng.toFixed(7);
 
-        // Poligonları kaydet
-        geojson.features.forEach(f => {
-            if (f.geometry.type === "Polygon") {
-                ovaPolygons.push(f.geometry.coordinates);
-            } else if (f.geometry.type === "MultiPolygon") {
-                f.geometry.coordinates.forEach(p => ovaPolygons.push(p));
-            }
-        });
+  document.getElementById("lat").value = lat;
+  document.getElementById("lon").value = lon;
 
-        console.log("Yüklenen polygon sayısı:", ovaPolygons.length);
+  if(clickMarker) map.removeLayer(clickMarker);
+  clickMarker = L.marker([lat,lon]).addTo(map);
 
-    } catch (err) {
-        console.error("KMZ okunamadı:", err);
-        alert("KMZ okunurken hata oluştu. Detay konsolda.");
+  checkPointInside(lat,lon);
+});
+
+// -----------------------------------
+// NOKTA POLİGON İÇİNDE Mİ?
+// -----------------------------------
+function checkPointInside(lat,lon){
+
+  const pt = turf.point([lon,lat]);
+  const insideList = [];
+
+  ovaFeatures.forEach(f=>{
+    if(turf.booleanPointInPolygon(pt,f)){
+      insideList.push(f.properties.name || "Ova Alanı");
     }
+  });
+
+  const result = document.getElementById("result");
+  const list = document.getElementById("ovaList");
+
+  if(insideList.length > 0){
+    result.style.color = "green";
+    result.textContent = "📌 Nokta OVA İÇİNDE";
+
+    list.innerHTML = "Bulunduğu Ova(lar):<br><b>" + insideList.join("<br>") + "</b>";
+
+  } else {
+    result.style.color = "red";
+    result.textContent = "📌 Nokta OVA DIŞINDA";
+    list.innerHTML = "";
+  }
 }
-
-// Kullanıcının verdiği noktayı kontrol et
-function checkPoint() {
-    let lat = parseFloat(document.getElementById("lat").value);
-    let lon = parseFloat(document.getElementById("lon").value);
-
-    if (isNaN(lat) || isNaN(lon)) {
-        alert("Koordinatlar geçerli değil.");
-        return;
-    }
-
-    let point = [lat, lon];
-    let insideAny = false;
-
-    for (let poly of ovaPolygons) {
-        if (pointInPolygon(point, poly)) {
-            insideAny = true;
-            break;
-        }
-    }
-
-    let div = document.getElementById("result");
-    if (insideAny) {
-        div.innerHTML = "✔ Bu nokta **OVA İÇİNDE**";
-        div.style.color = "green";
-    } else {
-        div.innerHTML = "✘ Bu nokta **OVA DIŞINDA**";
-        div.style.color = "red";
-    }
-}
-
-// Uygulama açılınca KMZ yükle
-loadKMZ();
 
 </script>
-
 </body>
 </html>
