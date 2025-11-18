@@ -2,64 +2,108 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Ova Sorgu Haritası</title>
+<title>BOKA Ova Haritası</title>
 
+<!-- Leaflet -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+<!-- KMZ / ZIP Kütüphaneleri -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5/dist/togeojson.umd.js"></script>
 
 <style>
   body { margin:0; }
-  #map { height:100vh; width:100vw; }
+  #map { height: 100vh; }
+  #log {
+    position:absolute;top:10px;left:10px;
+    background:#000;color:#0f0;
+    padding:10px;border-radius:6px;
+    font-family: monospace;font-size:12px;
+    opacity:0.85;
+    white-space:pre-wrap;
+    max-width:45%;
+  }
 </style>
 </head>
 <body>
 
+<div id="log">Başlıyor...</div>
 <div id="map"></div>
 
 <script>
-const map = L.map("map").setView([39, 35], 6);
 
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
+// --- Basit log fonksiyonu (ekrana hata / durum yazdırır) ---
+function log(msg){
+    document.getElementById("log").innerText += "\n" + msg;
+}
+
+// Haritayı aç
+const map = L.map("map").setView([39, 35], 6);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19
 }).addTo(map);
 
-let ovaLayers = []; // tüm ova poligonlarını burada tutacağız
+log("Harita hazır. BOKA.zip yükleniyor...");
 
-// -------------------------------
-// ZIP → KMZ → KML → GeoJSON YÜKLE
-// -------------------------------
+// ---------------------------
+// ZIP → KMZ → KML → GeoJSON
+// ---------------------------
 fetch("BOKA.zip")
-  .then(r => r.arrayBuffer())
-  .then(zipData => JSZip.loadAsync(zipData))
-  .then(zip => zip.file("BOKA.kmz").async("arraybuffer"))
-  .then(kmzData => JSZip.loadAsync(kmzData))
-  .then(kmzZip => {
-      const kmlFile = Object.keys(kmzZip.files).find(f => f.endsWith(".kml"));
-      return kmzZip.file(kmlFile).async("string");
-  })
-  .then(kmlText => {
-      const xml = new DOMParser().parseFromString(kmlText, "text/xml");
-      const geojson = toGeoJSON.kml(xml);
+    .then(r => {
+        if(!r.ok) throw new Error("BOKA.zip bulunamadı → Status: " + r.status);
+        log("BOKA.zip indirildi, açılıyor...");
+        return r.arrayBuffer();
+    })
+    .then(zipData => JSZip.loadAsync(zipData))
+    .then(zip => {
 
-      const layer = L.geoJSON(geojson, {
-          style: {
-              color: "red",
-              weight: 2,
-              fillOpacity: 0.15
-          }
-      }).addTo(map);
+        log("ZIP içeriği:");
+        log(JSON.stringify(Object.keys(zip.files), null, 2));
 
-      ovaLayers.push(layer);
+        // ZIP içindeki KMZ dosyasını bul
+        const kmzName = Object.keys(zip.files).find(f => f.toLowerCase().endsWith(".kmz"));
+        if(!kmzName) throw new Error("ZIP içinde .kmz dosyası bulunamadı!");
 
-      console.log("Ova poligonları başarıyla yüklendi!");
-  })
-  .catch(err => {
-      console.error("KMZ Okuma Hatası:", err);
-      alert("KMZ yüklenemedi. ZIP içindeki dosya adının 'BOKA.kmz' olduğundan emin olun.");
-  });
+        log("KMZ bulundu: " + kmzName);
+        return zip.file(kmzName).async("arraybuffer");
+    })
+    .then(kmzData => JSZip.loadAsync(kmzData))
+    .then(kmzZip => {
+
+        log("KMZ içeriği:");
+        log(JSON.stringify(Object.keys(kmzZip.files), null, 2));
+
+        // KMZ içindeki KML dosyasını bul
+        const kmlName = Object.keys(kmzZip.files).find(f => f.toLowerCase().endsWith(".kml"));
+        if(!kmlName) throw new Error("KMZ içinde .kml dosyası bulunamadı!");
+
+        log("KML bulundu: " + kmlName);
+        return kmzZip.file(kmlName).async("string");
+    })
+    .then(kmlText => {
+        log("KML alındı, GeoJSON'a çevriliyor...");
+
+        const xml = new DOMParser().parseFromString(kmlText, "text/xml");
+        const geojson = toGeoJSON.kml(xml);
+
+        log("GeoJSON üretildi. Poligonlar çiziliyor...");
+
+        L.geoJSON(geojson, {
+            style: {
+                color: "red",
+                weight: 2,
+                fillOpacity: 0.15
+            }
+        }).addTo(map);
+
+        log("✔ Ova poligonları başarıyla yüklendi!");
+    })
+    .catch(err => {
+        log("HATA OLUŞTU:");
+        log(err.message);
+        console.error(err);
+    });
 
 </script>
 
